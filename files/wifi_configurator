@@ -1,0 +1,69 @@
+cat << 'EOF' > /tmp/wifi_configurator.sh
+#!/usr/bin/env bash
+
+# NOTE: This script assumes `wlan0` interface is used and Wi-Fi networks aren't hidden. 
+# Also SSID networks without password aren't compatible with this script.
+
+function restore_config_and_exit {
+        echo "Unable to connect to the network at this time. Please check if correct name or password was used."
+        echo "Restoring wpa_supplicant.conf file before exiting..."
+        mv /etc/wpa_supplicant/wpa_supplicant.conf.bkup /etc/wpa_supplicant/wpa_supplicant.conf
+        /sbin/wpa_cli -i wlan0 reconfigure >/dev/null 2>&1
+        exit 1
+}
+
+# Attempting to list all available broadcasting SSIDs
+echo "Scanning all available broadcasting Wi-Fi networks..."
+echo "Networks with best quality or signal level is most likely close by."
+echo
+sudo iwlist wlan0 scan 2>/dev/null | grep -E "(Quality|ESSID)"
+
+# If scanning is unsuccessful, abort the script
+if [[ "$?" -ne 0 ]]
+then
+        echo "Unable to scan for a network at this time. Please check if Wi-Fi interface is enabled or try again later."
+        exit 1
+fi
+
+# Get SSID name and its password from user
+echo 
+echo "WARNING: New configuration will replace all previous configurations if operation is successful."
+echo
+echo "Please enter the follow Wi-Fi information in order to connect:"
+echo "For available country codes, please see here (https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2#Officially_assigned_code_elements)."
+read -p "Wi-Fi country code (e.g. 'US')? " wifiCountryCode
+read -p 'ESSID name? ' wifiSSID
+read -sp 'ESSID password? ' wifiPass
+echo
+
+# Temporarily backup original configuration
+echo "Backing up wpa_supplicant.conf file..."
+cp -a /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf.bkup
+
+# Add new Wi-Fi configuration to wpa_supplicant.conf file
+echo "Setting up new configuration for '$wifiSSID' network in wpa_supplicant.conf file..."
+echo -e "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\nupdate_config=1\ncountry=${wifiCountryCode}" > /etc/wpa_supplicant/wpa_supplicant.conf
+/usr/bin/wpa_passphrase $wifiSSID $wifiPass >> /etc/wpa_supplicant/wpa_supplicant.conf
+/bin/sed -i'' '/^[[:space:]]#psk=.*$/d' /etc/wpa_supplicant/wpa_supplicant.conf
+
+# Attempt to load the new configuration to the Wi-Fi interface
+if [[ $(/sbin/wpa_cli -i wlan0 reconfigure 2>&1) == "FAIL" ]]
+then
+        restore_config_and_exit
+else
+        /bin/sleep 10
+fi
+
+# Remove backup configuration file if successful. Otherwise restore and exit.
+ip addr show wlan0 | grep inet >/dev/null 2>&1
+if [[ "$?" -ne 0 ]]
+then
+        restore_config_and_exit
+else
+        echo "New Wi-Fi network successfully connected. Now exiting..."
+        rm /etc/wpa_supplicant/wpa_supplicant.conf.bkup
+fi
+
+EOF
+chmod +x /tmp/wifi_configurator.sh
+/tmp/wifi_configurator.sh

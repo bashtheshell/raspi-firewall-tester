@@ -1,0 +1,63 @@
+---
+- hosts: all
+  become: true
+  remote_user: pi
+  vars:
+    eth0_ip_addr: 192.168.123.1
+  tasks:
+    - name: Update apt cache and install latest raspi-config and dnsmasq packages
+      apt:
+        update_cache: yes
+        name:
+          - raspi-config
+          - dnsmasq
+        state: latest
+    - name: Run the raspi-config script
+      script: files/script-raspi-config.sh
+      args:
+        creates: /script-raspi-config_has_ran.true
+      notify: reboot rpi
+    - name: Force `reboot rpi` handler to run now
+      meta: flush_handlers
+    - name: Update config for dhcpcd
+      lineinfile:
+        path: /etc/dhcpcd.conf
+        backup: yes
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: '^interface eth0', line: 'interface eth0' }
+        - { regexp: '^static ip_address=', line: "static ip_address={{ eth0_ip_addr }}/24" }
+        - { regexp: '^noipv6', line: 'noipv6' }
+      notify: restart dhcpcd
+    - name: Add config for dnsmasq
+      copy: 
+        src: files/dnsmasq_router.conf
+        dest: /etc/dnsmasq.d/dnsmasq_router.conf
+      notify: restart dnsmasq
+    - name: Enable IP forwarding for masquerading
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+        reload: yes
+        state: present
+  handlers:
+      - name: Reboot the Raspberry Pi
+        reboot:
+          reboot_timeout: 150
+        listen: "reboot rpi"
+      - name: Restart the dhcpcd service
+        service:
+          name: dhcpcd
+          state: restarted
+        listen: "restart dhcpcd"
+      - name: Flush stale IP addresses on eth0
+        command:
+          cmd: /sbin/ip addr flush dev eth0
+        listen: "restart dhcpcd"
+      - name: Restart the dnsmasq service
+        service:
+          name: dnsmasq
+          state: restarted
+        listen: "restart dnsmasq"
